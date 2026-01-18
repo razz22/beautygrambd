@@ -264,6 +264,11 @@ class Order extends Model
         return $this->hasMany(OrderDeliveryVerification::class, 'order_id');
     }
 
+    public function courierShipmentInfo(): HasOne
+    {
+        return $this->hasOne(CourierShipmentInfo::class, 'order_id');
+    }
+
 
     protected static function boot(): void
     {

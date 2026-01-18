@@ -42,10 +42,18 @@ use App\Contracts\Repositories\DeliveryZipCodeRepositoryInterface;
 use App\Contracts\Repositories\ShippingAddressRepositoryInterface;
 use App\Contracts\Repositories\DeliveryManWalletRepositoryInterface;
 use App\Contracts\Repositories\OrderStatusHistoryRepositoryInterface;
+
 use App\Contracts\Repositories\DeliveryCountryCodeRepositoryInterface;
+use App\Models\CourierShipmentInfo;
 use App\Contracts\Repositories\DeliveryManTransactionRepositoryInterface;
 use App\Contracts\Repositories\LoyaltyPointTransactionRepositoryInterface;
 use App\Contracts\Repositories\OrderExpectedDeliveryHistoryRepositoryInterface;
+use App\Models\Courier;
+use App\Models\Order;
+use App\Services\PathaoService;
+use App\Services\SteadfastCourierService;
+use App\Services\RedxCourierService;
+use App\Models\BusinessSetting;
 
 class OrderController extends BaseController
 {
@@ -285,11 +293,12 @@ class OrderController extends BaseController
             ];
             $deliveryMen = $this->deliveryManRepo->getListWhere(filters: $filters, dataLimit: 'all');
             $isOrderOnlyDigital = $orderService->getCheckIsOrderOnlyDigital(order: $order);
+            $activeCouriers = Courier::where('is_active', 1)->get();
             if ($order['order_type'] == 'default_type') {
                 $orderCount = $this->orderRepo->getListWhereCount(filters: ['customer_id' => $order['customer_id']]);
                 return view('admin-views.order.order-details', compact('order', 'linkedOrders',
                     'deliveryMen', 'totalDelivered', 'companyName', 'companyWebLogo', 'physicalProduct',
-                    'countryRestrictStatus', 'zipRestrictStatus', 'countries', 'zipCodes', 'orderCount', 'isOrderOnlyDigital'));
+                    'countryRestrictStatus', 'zipRestrictStatus', 'countries', 'zipCodes', 'orderCount', 'isOrderOnlyDigital', 'activeCouriers'));
             } else {
                 $orderCount = $this->orderRepo->getListWhereCount(filters: ['customer_id' => $order['customer_id'], 'order_type' => 'POS']);
                 return view('admin-views.pos.order.order-details', compact('order', 'companyName', 'companyWebLogo', 'orderCount'));
@@ -475,16 +484,227 @@ class OrderController extends BaseController
 
     public function updateDeliverInfo(Request $request): RedirectResponse
     {
+        $orderData = Order::with(['details', 'customer', 'shippingAddress'])->find($request['order_id']);
+        if (!$orderData) {
+            ToastMagic::error(translate('Order_not_found'));
+            return back();
+        }
+
+        // Get shipping address data (already decoded by model cast)
+        $shippingAddress = (array) $orderData->shipping_address_data;
+        
+        // Calculate total quantity from order details
+        $totalQuantity = $orderData->details->sum('qty');
+
+        // Update order with delivery service info
         $updateData = [
             'delivery_type' => 'third_party_delivery',
             'delivery_service_name' => $request['delivery_service_name'],
-            'third_party_delivery_tracking_id' => $request['third_party_delivery_tracking_id'],
+            'third_party_delivery_tracking_id' => $request['third_party_delivery_tracking_id'] ?? null,
             'delivery_man_id' => null,
             'deliveryman_charge' => 0,
             'expected_delivery_date' => null,
         ];
-        $this->orderRepo->update(id: $request['order_id'], data: $updateData);
 
+        // If Pathao is selected, create order via API
+        if ($request['delivery_service_name'] === 'Pathao') {
+            try {
+                $pathaoService = app(PathaoService::class);
+                
+                // Get courier configuration
+                $courier = Courier::where('title', 'Pathao')->first();
+                
+                // Build Pathao payload using form fields
+                $payload = [
+                    'store_id' => (int) $courier->store_id,
+                    'merchant_order_id' => (string) $orderData->id,
+                    'sender_name' => getWebConfig('company_name') ?? config('app.name'),
+                    'sender_phone' => '01987654547',
+                    'recipient_name' => $shippingAddress['contact_person_name'] ?? $orderData->customer->f_name . ' ' . $orderData->customer->l_name,
+                    'recipient_phone' => $request['pathao_recipient_phone'], // From form
+                    'recipient_address' => $request['pathao_recipient_address'], // From form
+                    'recipient_city' => (int) $request['pathao_city_id'],
+                    'recipient_zone' => (int) $request['pathao_zone_id'],
+                    'recipient_area' => (int) $request['pathao_area_id'],
+                    'delivery_type' => 48,
+                    'item_type' => 2,
+                    'amount_to_collect' => (float) $orderData->order_amount,
+                    'item_quantity' => (int) $totalQuantity,
+                    'item_weight' => (float) $request['pathao_item_weight'], // From form
+                    'item_description' => $request['pathao_item_description'] ?? 'Order #' . $orderData->id, // From form
+                ];
+
+                // Create order in Pathao
+                $response = $pathaoService->createOrder($payload);
+
+                // Check if order was created successfully
+                if (isset($response['data']['consignment_id'])) {
+                    $updateData['third_party_delivery_tracking_id'] = $response['data']['consignment_id'];
+                    
+                    $this->orderRepo->update(id: $request['order_id'], data: $updateData);
+
+                    // Store Pathao order response in courier_shipment_infos table
+                    CourierShipmentInfo::create([
+                        'order_id' => $request['order_id'],
+                        'courier_name' => 'Pathao',
+                        'consignment_id' => $response['data']['consignment_id'],
+                        'merchant_order_id' => $response['data']['merchant_order_id'] ?? null,
+                        'delivery_fee' => $response['data']['delivery_fee'] ?? 0,
+                        'order_status' => $response['data']['order_status'] ?? 'Pending',
+                        'response_data' => json_encode($response),
+                    ]);
+                    
+                    ToastMagic::success(translate('Order_created_successfully') . ' ' . translate('Consignment_ID') . ': ' . $response['data']['consignment_id']);
+                    return back();
+                } else {
+                    // Pathao API returned error
+                    $errorMessage = $response['message'] ?? translate('Failed_to_create_Pathao_order');
+                    
+                    if (isset($response['errors']) && is_array($response['errors'])) {
+                        foreach ($response['errors'] as $key => $errors) {
+                            foreach ($errors as $error) {
+                                $errorMessage .= '<br>' . $key . ': ' . $error;
+                            }
+                        }
+                    }
+                    
+                    ToastMagic::error($errorMessage);
+                    return back();
+                }
+                
+            } catch (\Exception $e) {
+                ToastMagic::error(translate('Pathao_error') . ': ' . $e->getMessage());
+                return back();
+            }
+        }
+
+        // If Steadfast is selected, create order via API
+        if ($request['delivery_service_name'] === 'SteadFast') {
+            try {
+                $steadfastService = app(SteadfastCourierService::class);
+                
+                // Steadfast Payload
+                $payload = [
+                    'invoice' => (string) $orderData->id,
+                    'recipient_name' => $request['steadfast_recipient_name'] ?? $orderData->customer->f_name . ' ' . $orderData->customer->l_name,
+                    'recipient_phone' => $request['steadfast_recipient_phone'] ?? $orderData->customer->phone,
+                    'recipient_address' => $request['steadfast_recipient_address'] ?? $shippingAddress['address'], 
+                    'cod_amount' => $orderData->payment_method == 'cash_on_delivery' ? (float) $orderData->order_amount : 0,
+                    'note' => $request['order_note'] ?? '',
+                    'item_description' => 'Order #' . $orderData->id,
+                    'delivery_type' => (int) $request['steadfast_delivery_type'],
+                ];
+
+                // Create order in Steadfast
+                $response = $steadfastService->createOrder($payload);
+
+
+                // Check if order was created successfully
+                if (isset($response['status']) && $response['status'] == 200 && isset($response['consignment'])) {
+                    $consignment = $response['consignment'];
+                    $updateData['third_party_delivery_tracking_id'] = $consignment['consignment_id'];
+                    
+                    $this->orderRepo->update(id: $request['order_id'], data: $updateData);
+
+                    // Store Steadfast order response in courier_shipment_infos table
+                    CourierShipmentInfo::create([
+                        'order_id' => $request['order_id'],
+                        'courier_name' => 'Steadfast',
+                        'consignment_id' => $consignment['consignment_id'],
+                        'merchant_order_id' => $consignment['invoice'],
+                        'delivery_fee' => 0, // Steadfast response doesn't seem to return fee in create_order
+                        'order_status' => $consignment['status'],
+                        'response_data' => json_encode($response),
+                    ]);
+                    
+                    ToastMagic::success(translate('Order_created_successfully') . ' ' . translate('Tracking_Code') . ': ' . $consignment['tracking_code']);
+                    return back();
+                } else {
+                    // Steadfast API returned error
+                     $errorMessage = $response['message'] ?? translate('Failed_to_create_Steadfast_order');
+                     if(isset($response['data']) && is_array($response['data'])){
+                         foreach($response['data'] as $dataItem){
+                             if(isset($dataItem['status']) && $dataItem['status'] == 'error'){
+                                 $errorMessage .= '<br>' . ($dataItem['invoice'] ?? '') . ': ' . json_encode($dataItem);
+                             }
+                         }
+                     }
+                    ToastMagic::error($errorMessage);
+                    return back();
+                }
+                
+            } catch (\Exception $e) {
+                ToastMagic::error(translate('Steadfast_error') . ': ' . $e->getMessage());
+                return back();
+            }
+        }
+
+
+        // If Redx is selected, create order via API
+        if ($request['delivery_service_name'] === 'Redx') {
+            try {
+                $redxService = app(RedxCourierService::class);
+                
+                $payload = [
+                    'customer_name' => $request['redx_recipient_name'],
+                    'customer_phone' => $request['redx_recipient_phone'],
+                    'delivery_area' => $request['redx_delivery_area'], 
+                    'delivery_area_id' => (int) $request['redx_delivery_area_id'],
+                    'customer_address' => $request['redx_recipient_address'],
+                    'merchant_invoice_id' => (string) $orderData->id,
+                    'cash_collection_amount' => $orderData->payment_method == 'cash_on_delivery' ? (float) $orderData->order_amount : 0,
+                    'parcel_weight' => (int) $request['redx_parcel_weight'],
+                    'instruction' => $request['redx_instruction'] ?? '',
+                    // 'pickup_store_id' => '1020200',
+                    'value' => (float) $orderData->order_amount,
+                ];
+
+
+                $response = $redxService->createParcel($payload);
+
+                if (isset($response['tracking_id'])) { 
+                     $trackingId = $response['tracking_id'];
+                     $updateData['third_party_delivery_tracking_id'] = $trackingId;
+                     
+                     $this->orderRepo->update(id: $request['order_id'], data: $updateData);
+                     
+                     CourierShipmentInfo::create([
+                        'order_id' => $request['order_id'],
+                        'courier_name' => 'Redx',
+                        'consignment_id' => $trackingId,
+                        'merchant_order_id' => (string) $orderData->id,
+                        'delivery_fee' => 0, 
+                        'order_status' => 'Pending',
+                        'response_data' => json_encode($response),
+                    ]);
+
+                     ToastMagic::success(translate('Order_created_successfully') . ' ' . translate('Tracking_ID') . ': ' . $trackingId);
+                     return back();
+                } else {
+                     $errorMessage = $response['message'] ?? translate('Failed_to_create_Redx_order');
+                        if (isset($response['errors']) && is_array($response['errors'])) {
+                            foreach ($response['errors'] as $key => $errors) {
+                                if (is_array($errors)) {
+                                    foreach ($errors as $error) {
+                                        $errorMessage .= '<br>' . $key . ': ' . $error;
+                                    }
+                                } else {
+                                     $errorMessage .= '<br>' . $key . ': ' . $errors;
+                                }
+                            }
+                        }
+                     ToastMagic::error($errorMessage);
+                     return back();
+                }
+
+            } catch (\Exception $e) {
+                ToastMagic::error(translate('Redx_error') . ': ' . $e->getMessage());
+                return back();
+            }
+        }
+
+        // For other courier services, just update the tracking info
+        $this->orderRepo->update(id: $request['order_id'], data: $updateData);
         ToastMagic::success(translate('updated_successfully'));
         return back();
     }
