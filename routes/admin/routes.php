@@ -32,6 +32,9 @@ use App\Http\Controllers\Admin\Settings\PagesController;
 use App\Http\Controllers\Admin\Settings\ThemeController;
 use App\Http\Controllers\Admin\Product\ProductController;
 use App\Http\Controllers\Admin\ThirdParty\MailController;
+use App\Http\Controllers\Admin\ThirdParty\CourierServiceController;
+use App\Http\Controllers\Admin\ThirdParty\PathaoController;
+use App\Http\Controllers\Admin\ThirdParty\RedxController;
 use App\Http\Controllers\Admin\Product\CategoryController;
 use App\Http\Controllers\Admin\Promotion\BannerController;
 use App\Http\Controllers\Admin\Promotion\CouponController;
@@ -916,6 +919,36 @@ Route::group(['prefix' => 'admin', 'as' => 'admin.'], function () {
             Route::controller(GoogleMapAPIController::class)->group(function () {
                 Route::get('map-api', 'index')->name('map-api');
                 Route::post('map-api', 'update');
+            });
+
+            Route::group(['prefix' => 'courier-service', 'as' => 'courier-service.'], function () {
+                Route::controller(CourierServiceController::class)->group(function () {
+                    Route::get('', 'index')->name('index');
+                    Route::put('update/{id}', 'update')->name('update');
+                    Route::post('update-status', 'updateStatus')->name('update-status');
+                });
+            });
+
+            Route::group(['prefix' => 'pathao', 'as' => 'pathao.'], function () {
+                Route::controller(PathaoController::class)->group(function () {
+                    Route::get('get-cities', 'getCities')->name('get-cities');
+                    Route::get('get-zones', 'getZones')->name('get-zones');
+                    Route::get('get-areas', 'getAreas')->name('get-areas');
+                    Route::get('get-order-details', 'getOrderDetails')->name('get-order-details');
+                });
+
+            });
+
+            Route::group(['prefix' => 'steadfast', 'as' => 'steadfast.'], function () {
+                Route::controller(SteadfastController::class)->group(function () {
+                    Route::get('get-delivery-status', 'getDeliveryStatus')->name('get-delivery-status');
+                });
+            });
+            
+            Route::group(['prefix' => 'redx', 'as' => 'redx.'], function () {
+                Route::controller(RedxController::class)->group(function () {
+                     Route::get('get-areas', 'getAreas')->name('get-areas');
+                });
             });
         });
     });

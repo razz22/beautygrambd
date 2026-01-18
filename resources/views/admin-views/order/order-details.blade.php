@@ -499,7 +499,7 @@
                                     @endif
                                    <div class="select-wrapper">
                                         <select class="form-select" name="delivery_type"
-                                        id="choose_delivery_type" {{ $order->order_status == 'delivered' ? 'disabled' : '' }}>
+                                        id="choose_delivery_type" {{ $order->order_status == 'delivered' || $order->third_party_delivery_tracking_id ? 'disabled' : '' }}>
                                             <option value="0">
                                                 {{translate('choose_delivery_type')}}
                                             </option>
@@ -524,7 +524,7 @@
                                         id="addDeliveryMan"
                                         data-order-id="{{$order['id']}}"
                                         data-placeholder="Select from dropdown"
-                                        {{ $order->order_status == 'delivered' ? 'disabled' : '' }}
+                                        {{ $order->order_status == 'delivered' || $order->third_party_delivery_tracking_id ? 'disabled' : '' }}
                                         >
                                         <option></option>
                                         <option
@@ -596,7 +596,8 @@
                                 @endif
 
                                 <li class="mt-1  form-group" id="by_third_party_delivery_service_info">
-                                    <div class="p-2 bg-light rounded">
+                                    <div class="p-2 bg-light rounded" style="cursor: pointer;"
+                                        onclick="openCourierInfoModal('{{$order->delivery_service_name}}', '{{$order->third_party_delivery_tracking_id}}')">
                                         <div class="media overflow-hidden m-1 gap-3">
                                             <img class="avatar rounded-circle"
                                                  src="{{ dynamicAsset(path: 'public/assets/new/back-end/img/third-party-delivery.png')}}"
@@ -1355,7 +1356,65 @@
         </div>
     </div>
 
-    <div class="modal" id="third_party_delivery_service_modal" role="dialog" tabindex="-1">
+    <div class="modal fade" id="courierInfoModal" tabindex="-1" aria-labelledby="courierInfoModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="courierInfoModalLabel">{{translate('courier_shipment_info')}}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="courierInfoModalBody">
+                    <!-- Content will be loaded dynamically -->
+                    <div class="text-center">
+                         <span class="spinner-border text-primary" role="status"></span>
+                         <span class="ms-2">{{translate('loading')}}...</span>
+                    </div>
+                </div>
+                <!-- Hidden Template for Static/Fallback Data -->
+                <div id="staticCourierInfo" style="display: none;">
+                    @if($order->courierShipmentInfo)
+                        <table class="table table-bordered">
+                            <tbody>
+                                <tr>
+                                    <th>{{translate('courier_name')}}</th>
+                                    <td>{{$order->courierShipmentInfo->courier_name}}</td>
+                                </tr>
+                                <tr>
+                                    <th>{{translate('consignment_id')}}</th>
+                                    <td>{{$order->courierShipmentInfo->consignment_id}}</td>
+                                </tr>
+                                <tr>
+                                    <th>{{translate('merchant_order_id')}}</th>
+                                    <td>{{$order->courierShipmentInfo->merchant_order_id}}</td>
+                                </tr>
+                                <tr>
+                                    <th>{{translate('delivery_fee')}}</th>
+                                    <td>{{$order->courierShipmentInfo->delivery_fee}}</td>
+                                </tr>
+                                <tr>
+                                    <th>{{translate('order_status')}}</th>
+                                    <td>{{$order->courierShipmentInfo->order_status}}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div class="mt-3">
+                             <h6>{{translate('full_response')}}:</h6>
+                             <pre class="bg-light p-2" style="max-height: 200px; overflow-y: auto;">{{ json_encode(json_decode($order->courierShipmentInfo->response_data ?? '{}'), JSON_PRETTY_PRINT) }}</pre>
+                        </div>
+                    @else
+                        <div class="text-center">
+                            <p>{{translate('no_info_found')}}</p>
+                        </div>
+                    @endif
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{translate('close')}}</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="third_party_delivery_service_modal" role="dialog" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1373,14 +1432,201 @@
                                 <div class="card-body">
                                     <div class="form-group">
                                         <label for="">{{translate('delivery_service_name')}}</label>
-                                        <input class="form-control" type="text" name="delivery_service_name"
-                                               value="{{$order['delivery_service_name']}}" id="" required>
+                                        <select class="form-control" name="delivery_service_name" id="courier_service_select" required>
+                                            <option value="">{{translate('select_courier_service')}}</option>
+                                            @foreach($activeCouriers as $courier)
+                                                <option value="{{$courier->title}}" {{ $order['delivery_service_name'] == $courier->title ? 'selected' : '' }}>
+                                                    {{$courier->title}}
+                                                </option>
+                                            @endforeach
+                                        </select>
                                     </div>
-                                    <div class="form-group">
-                                        <label for="">{{translate('tracking_id')}} ({{translate('optional')}})</label>
-                                        <input class="form-control" type="text" name="third_party_delivery_tracking_id"
-                                               value="{{$order['third_party_delivery_tracking_id']}}" id="">
+
+                                    <!-- Pathao-specific fields (hidden by default) -->
+                                    <div id="pathao_fields" style="display: none;">
+                                        <div class="alert alert-info">
+                                            <strong>{{translate('customer_info')}}:</strong><br>
+                                            {{translate('name')}}: {{$shippingAddress ? $shippingAddress->contact_person_name : ($order->customer ? $order->customer->f_name . ' ' . $order->customer->l_name : 'N/A')}}<br>
+                                            {{translate('phone')}}: {{$shippingAddress ? $shippingAddress->phone : ($order->customer ? $order->customer->phone : 'N/A')}}<br>
+                                            {{translate('address')}}: {{$shippingAddress ? $shippingAddress->address : 'N/A'}}<br>
+                                            {{translate('city')}}: {{$shippingAddress ? $shippingAddress->city : 'N/A'}}<br>
+                                            {{translate('zip_code')}}: {{$shippingAddress ? $shippingAddress->zip : 'N/A'}}<br>
+                                            {{translate('country')}}: {{$shippingAddress ? $shippingAddress->country : 'N/A'}}<br>
+                                            {{translate('order_amount')}}: {{setCurrencySymbol(amount: usdToDefaultCurrency(amount: $order['order_amount']))}}
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="pathao_city_id">{{translate('pathao_city')}} <span class="text-danger">*</span></label>
+                                            <select class="form-control" name="pathao_city_id" id="pathao_city_id" required>
+                                                <option value="">{{translate('select_city')}}</option>
+                                            </select>
+                                            <small class="text-muted">{{translate('loading_cities')}}...</small>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="pathao_zone_id">{{translate('pathao_zone')}} <span class="text-danger">*</span></label>
+                                            <select class="form-control" name="pathao_zone_id" id="pathao_zone_id" disabled>
+                                                <option value="">{{translate('select_zone')}}</option>
+                                            </select>
+                                            <small class="text-muted">{{translate('select_city_first')}}</small>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="pathao_area_id">{{translate('pathao_area')}} <span class="text-danger">*</span></label>
+                                            <select class="form-control" name="pathao_area_id" id="pathao_area_id" disabled>
+                                                <option value="">{{translate('select_area')}}</option>
+                                            </select>
+                                            <small class="text-muted">{{translate('select_zone_first')}}</small>
+                                        </div>
+
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label for="pathao_recipient_phone">{{translate('recipient_phone')}} <span class="text-danger">*</span></label>
+                                                    <input type="text" class="form-control" name="pathao_recipient_phone" id="pathao_recipient_phone" 
+                                                           value="{{$shippingAddress ? $shippingAddress->phone : ($order->customer ? $order->customer->phone : '')}}" 
+                                                           placeholder="{{translate('ex')}}: 01700000000" required>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label for="pathao_item_weight">{{translate('item_weight')}} (kg) <span class="text-danger">*</span></label>
+                                                    <input type="number" step="0.01" class="form-control" name="pathao_item_weight" id="pathao_item_weight" 
+                                                           value="0.5" placeholder="{{translate('ex')}}: 0.5" required>
+                                                    <small class="text-muted">{{translate('total_weight_in_kg')}}</small>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="pathao_recipient_address">{{translate('recipient_address')}} <span class="text-danger">*</span></label>
+                                            <textarea class="form-control" name="pathao_recipient_address" id="pathao_recipient_address" 
+                                                      rows="2" placeholder="{{translate('enter_delivery_address')}}" required>{{$shippingAddress ? $shippingAddress->address : ''}}</textarea>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="pathao_item_description">{{translate('item_description')}}</label>
+                                            <textarea class="form-control" name="pathao_item_description" id="pathao_item_description" 
+                                                      rows="2" placeholder="{{translate('ex')}}: {{translate('order_items_description')}}">Order #{{$order->id}} - {{$order->details->sum('qty')}} items</textarea>
+                                        </div>
                                     </div>
+
+                                    <div id="steadfast_fields" style="display: none;">
+                                        <div class="alert alert-info">
+                                            <strong>{{translate('customer_info')}}:</strong><br>
+                                            {{translate('name')}}: {{$shippingAddress ? $shippingAddress->contact_person_name : ($order->customer ? $order->customer->f_name . ' ' . $order->customer->l_name : 'N/A')}}<br>
+                                            {{translate('phone')}}: {{$shippingAddress ? $shippingAddress->phone : ($order->customer ? $order->customer->phone : 'N/A')}}<br>
+                                            {{translate('address')}}: {{$shippingAddress ? $shippingAddress->address : 'N/A'}}<br>
+                                            {{translate('city')}}: {{$shippingAddress ? $shippingAddress->city : 'N/A'}}<br>
+                                            {{translate('zip_code')}}: {{$shippingAddress ? $shippingAddress->zip : 'N/A'}}<br>
+                                            {{translate('country')}}: {{$shippingAddress ? $shippingAddress->country : 'N/A'}}<br>
+                                            {{translate('order_amount')}}: {{setCurrencySymbol(amount: usdToDefaultCurrency(amount: $order['order_amount']))}}
+                                        </div>
+
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{ translate('recipient_name') }}</label>
+                                                    <input type="text" class="form-control" name="steadfast_recipient_name" value="{{ $shippingAddress ? $shippingAddress->contact_person_name : '' }}">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{ translate('recipient_phone') }}</label>
+                                                    <input type="text" class="form-control" name="steadfast_recipient_phone" value="{{ $shippingAddress ? $shippingAddress->phone : '' }}">
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{ translate('recipient_address') }}</label>
+                                                    <textarea class="form-control" name="steadfast_recipient_address">{{ $shippingAddress ? $shippingAddress->address : '' }}</textarea>
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{ translate('delivery_type') }}</label>
+                                                    <select class="form-control mb-2" name="steadfast_delivery_type">
+                                                        <option value="0">{{ translate('home_delivery') }}</option>
+                                                        <option value="1">{{ translate('point_delivery') }} / {{ translate('hub_pickup') }}</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Redx-specific fields -->
+                                    <div id="redx_fields" style="display: none;">
+                                        <div class="alert alert-info">
+                                            <strong>{{translate('customer_info')}}:</strong><br>
+                                            {{translate('name')}}: {{$shippingAddress ? $shippingAddress->contact_person_name : ($order->customer ? $order->customer->f_name . ' ' . $order->customer->l_name : 'N/A')}}<br>
+                                            {{translate('phone')}}: {{$shippingAddress ? $shippingAddress->phone : ($order->customer ? $order->customer->phone : 'N/A')}}<br>
+                                            {{translate('address')}}: {{$shippingAddress ? $shippingAddress->address : 'N/A'}}<br>
+                                            {{translate('city')}}: {{$shippingAddress ? $shippingAddress->city : 'N/A'}}<br>
+                                            {{translate('zip_code')}}: {{$shippingAddress ? $shippingAddress->zip : 'N/A'}}<br>
+                                            {{translate('country')}}: {{$shippingAddress ? $shippingAddress->country : 'N/A'}}<br>
+                                            {{translate('order_amount')}}: {{setCurrencySymbol(amount: usdToDefaultCurrency(amount: $order['order_amount']))}}
+                                        </div>
+
+                                        <div class="row g-3">
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('recipient_name')}}</label>
+                                                    <input type="text" class="form-control" name="redx_recipient_name" 
+                                                        value="{{$order->customer->f_name ?? ''}} {{$order->customer->l_name ?? ''}}" >
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('recipient_phone')}}</label>
+                                                    <input type="text" class="form-control" name="redx_recipient_phone" 
+                                                        value="{{$order->customer->phone ?? ''}}" >
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('recipient_address')}}</label>
+                                                    <textarea class="form-control" name="redx_recipient_address" >{{$shippingAddress->address ?? ''}}</textarea>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('area_district')}}</label>
+                                                    <input type="text" class="form-control" name="redx_district" id="redx_district" placeholder="{{translate('district')}}">
+                                                </div>
+                                            </div>
+
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('area_post_code')}}</label>
+                                                    <input type="text" class="form-control" name="redx_post_code" id="redx_post_code" placeholder="{{translate('post_code')}}">
+                                                </div>
+                                            </div>
+
+                                            <div class="col-12">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('delivery_area')}} <span class="text-danger">*</span></label>
+                                                    <select class="form-control" name="redx_delivery_area_id" id="redx_delivery_area_id">
+                                                        <option value="">{{translate('select_area')}}</option>
+                                                    </select>
+                                                    <input type="hidden" name="redx_delivery_area" id="redx_delivery_area">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group">
+                                                    <label class="form-label">{{translate('parcel_weight')}} (g)</label>
+                                                    <input type="number" class="form-control" name="redx_parcel_weight" value="500">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="form-group mb-2">
+                                                    <label class="form-label">{{translate('instruction')}}</label>
+                                                    <input type="text" class="form-control" name="redx_instruction" value="" placeholder="{{translate('instruction')}}">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <button class="btn btn-primary" type="submit">{{translate('update')}}</button>
                                 </div>
                             </form>
@@ -1448,5 +1694,284 @@
                 defer>
         </script>
     @endif
+    
+    <script>
+        'use strict';
+        
+        $(document).ready(function() {
+            // Handle courier service selection
+            // Handle courier service selection
+            $('#courier_service_select').on('change', function() {
+                const selectedCourier = $(this).val();
+                
+                // Reset fields
+                $('#pathao_fields').slideUp();
+                $('#steadfast_fields').slideUp();
+                $('#redx_fields').slideUp();
+                $('#pathao_fields :input').prop('required', false);
+                $('#steadfast_fields :input').prop('required', false);
+                $('#redx_fields :input').prop('required', false);
+
+                if (selectedCourier === 'Pathao') {
+                    $('#pathao_fields').slideDown();
+                    // Enable required for Pathao inputs, except disabled unused ones
+                    $('#pathao_fields :input').not(':disabled').prop('required', true);
+                    // Specifically ensure city is required
+                    $('#pathao_city_id').prop('required', true);
+                    loadPathaoCities();
+                } else if (selectedCourier === 'SteadFast') {
+                    $('#steadfast_fields').slideDown();
+                    // Enable required for Steadfast inputs
+                     $('#steadfast_fields :input').prop('required', true);
+                } else if (selectedCourier === 'Redx') {
+                    $('#redx_fields').slideDown();
+                    $('#redx_fields :input').not('#redx_post_code, #redx_district, #redx_instruction').prop('required', true);
+                }
+            });
+
+            // Redx Area Search
+            let redxSearchTimeout;
+            $('#redx_post_code, #redx_district').on('keyup change', function() {
+                clearTimeout(redxSearchTimeout);
+                const postCode = $('#redx_post_code').val();
+                const district = $('#redx_district').val();
+                
+                redxSearchTimeout = setTimeout(function() {
+                    if (postCode.length > 2 || district.length > 2) {
+                        loadRedxAreas(postCode, district);
+                    }
+                }, 500);
+            });
+
+            function loadRedxAreas(postCode, district) {
+                 $.ajax({
+                    url: '{{ route("admin.third-party.redx.get-areas") }}',
+                    type: 'GET',
+                    data: { post_code: postCode, district_name: district },
+                    beforeSend: function() {
+                        $('#redx_delivery_area_id').empty().append('<option value="">{{translate("loading")}}...</option>');
+                    },
+                    success: function(response) {
+                        $('#redx_delivery_area_id').empty().append('<option value="">{{translate("select_area")}}</option>');
+                        
+                        let areas = [];
+                        if (response.success && response.data) {
+                            areas = response.data;
+                        } else if (response.areas) {
+                             areas = response.areas;
+                        } else if (Array.isArray(response)) {
+                             areas = response;
+                        }
+
+                        if (areas.length > 0) {
+                             areas.forEach(function(area) {
+                                $('#redx_delivery_area_id').append(
+                                    `<option value="${area.id}" data-name="${area.name}">${area.name} (${area.post_code})</option>`
+                                );
+                            });
+                        } else {
+                            $('#redx_delivery_area_id').append('<option value="" disabled>{{translate("no_areas_found")}}</option>');
+                        }
+                    },
+                    error: function() {
+                        $('#redx_delivery_area_id').empty().append('<option value="">{{translate("error_loading_areas")}}</option>');
+                    }
+                });
+            }
+
+            $('#redx_delivery_area_id').on('change', function() {
+                const areaName = $(this).find('option:selected').data('name');
+                $('#redx_delivery_area').val(areaName);
+            });
+
+    function loadPathaoCities() {
+                $.ajax({
+                    url: '{{ route("admin.third-party.pathao.get-cities") }}',
+                    type: 'GET',
+                    success: function(response) {
+                        $('#pathao_city_id').empty().append('<option value="">{{translate("select_city")}}</option>');
+                        
+                        if (response.success && response.data) {
+                            response.data.forEach(function(city) {
+                                $('#pathao_city_id').append(
+                                    `<option value="${city.city_id}">${city.city_name}</option>`
+                                );
+                            });
+                            $('#pathao_city_id').next('small').text('{{translate("select_a_city")}}');
+                        }
+                    },
+                    error: function() {
+                        $('#pathao_city_id').next('small').text('{{translate("failed_to_load_cities")}}').addClass('text-danger');
+                    }
+                });
+            }
+
+            // Load zones when city is selected
+            $('#pathao_city_id').on('change', function() {
+                const cityId = $(this).val();
+                
+                if (cityId) {
+                    $.ajax({
+                        url: '{{ route("admin.third-party.pathao.get-zones") }}',
+                        type: 'GET',
+                        data: { city_id: cityId },
+                        success: function(response) {
+                            $('#pathao_zone_id').empty().append('<option value="">{{translate("select_zone")}}</option>');
+                            $('#pathao_area_id').empty().append('<option value="">{{translate("select_area")}}</option>').prop('disabled', true);
+                            
+                            if (response.success && response.data) {
+                                response.data.forEach(function(zone) {
+                                    $('#pathao_zone_id').append(
+                                        `<option value="${zone.zone_id}">${zone.zone_name}</option>`
+                                    );
+                                });
+                                $('#pathao_zone_id').prop('disabled', false);
+                                $('#pathao_zone_id').next('small').text('{{translate("select_a_zone")}}').removeClass('text-danger');
+                            }
+                        },
+                        error: function() {
+                            $('#pathao_zone_id').next('small').text('{{translate("failed_to_load_zones")}}').addClass('text-danger');
+                        }
+                    });
+                } else {
+                    $('#pathao_zone_id').empty().append('<option value="">{{translate("select_zone")}}</option>').prop('disabled', true);
+                    $('#pathao_area_id').empty().append('<option value="">{{translate("select_area")}}</option>').prop('disabled', true);
+                }
+            });
+
+            // Load areas when zone is selected
+            $('#pathao_zone_id').on('change', function() {
+                const zoneId = $(this).val();
+                
+                if (zoneId) {
+                    $.ajax({
+                        url: '{{ route("admin.third-party.pathao.get-areas") }}',
+                        type: 'GET',
+                        data: { zone_id: zoneId },
+                        success: function(response) {
+                            $('#pathao_area_id').empty().append('<option value="">{{translate("select_area")}}</option>');
+                            
+                            if (response.success && response.data) {
+                                response.data.forEach(function(area) {
+                                    $('#pathao_area_id').append(
+                                        `<option value="${area.area_id}">${area.area_name}</option>`
+                                    );
+                                });
+                                $('#pathao_area_id').prop('disabled', false);
+                                $('#pathao_area_id').next('small').text('{{translate("select_an_area")}}').removeClass('text-danger');
+                            }
+                        },
+                        error: function() {
+                            $('#pathao_area_id').next('small').text('{{translate("failed_to_load_areas")}}').addClass('text-danger');
+                        }
+                    });
+                } else {
+                    $('#pathao_area_id').empty().append('<option value="">{{translate("select_area")}}</option>').prop('disabled', true);
+                }
+            });
+
+            // Trigger change to set initial state
+            $('#courier_service_select').trigger('change');
+    });
+
+    function openCourierInfoModal(courierName, consignmentId) {
+        if (!consignmentId) return;
+
+        $('#courierInfoModal').modal('show');
+        const modalBody = $('#courierInfoModalBody');
+        
+        // Default loading Spinner
+        modalBody.html('<div class="text-center"><span class="spinner-border text-primary" role="status"></span><span class="ms-2">{{translate("loading")}}...</span></div>');
+        
+        if (courierName === 'Pathao') {
+            $.ajax({
+                url: '{{ route("admin.third-party.pathao.get-order-details") }}',
+                type: 'GET',
+                data: { consignment_id: consignmentId },
+                success: function(response) {
+                    if (response.success && response.data) {
+                        const data = response.data;
+                        let html = `
+                            <table class="table table-bordered">
+                                <tbody>
+                                    <tr>
+                                        <th>{{translate('courier_name')}}</th>
+                                        <td>${courierName}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('consignment_id')}}</th>
+                                        <td>${data.consignment_id}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('merchant_order_id')}}</th>
+                                        <td>${data.merchant_order_id}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('order_status')}}</th>
+                                        <td>${data.order_status}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('last_updated')}}</th>
+                                        <td>${data.updated_at}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        `;
+                        modalBody.html(html);
+                    } else {
+                        modalBody.html('<div class="text-center text-danger"><p>{{translate("failed_to_fetch_live_data")}}</p></div>');
+                    }
+                },
+                error: function() {
+                    modalBody.html('<div class="text-center text-danger"><p>{{translate("error_fetching_data")}}</p></div>');
+                }
+            });
+        } else if (courierName === 'Steadfast') {
+            $.ajax({
+                url: '{{ route("admin.third-party.steadfast.get-delivery-status") }}',
+                type: 'GET',
+                data: { consignment_id: consignmentId },
+                success: function(response) {
+                    if (response.success && response.data) {
+                        const data = response.data;
+                        let html = `
+                            <table class="table table-bordered">
+                                <tbody>
+                                    <tr>
+                                        <th>{{translate('courier_name')}}</th>
+                                        <td>${courierName}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('consignment_id')}}</th>
+                                        <td>${consignmentId}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>{{translate('delivery_status')}}</th>
+                                        <td>${data.delivery_status}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        `;
+                        modalBody.html(html);
+                    } else {
+                        modalBody.html('<div class="text-center text-danger"><p>{{translate("failed_to_fetch_live_data")}}</p></div>');
+                    }
+                },
+                error: function() {
+                    modalBody.html('<div class="text-center text-danger"><p>{{translate("error_fetching_data")}}</p></div>');
+                }
+            });
+        } else {
+            // Fallback to static DB data for other couriers
+            const staticContent = $('#staticCourierInfo').html();
+            if (staticContent && staticContent.trim()) {
+                modalBody.html(staticContent);
+            } else {
+                modalBody.html('<div class="text-center"><p>{{translate("no_info_found")}}</p></div>');
+            }
+        }
+    }
+</script>
+    
     <script src="{{ dynamicAsset(path: 'public/assets/back-end/js/admin/order.js') }}"></script>
 @endpush

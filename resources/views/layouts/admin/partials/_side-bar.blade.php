@@ -1314,6 +1314,17 @@
                         </span>
                     </a>
                 </li>
+
+                <li>
+                    <a class="nav-link {{ Request::is('admin/third-party/courier-service') ? 'active' : '' }}"
+                       href="{{ route('admin.third-party.courier-service.index') }}"
+                       title="{{ translate('Courier_Service') }}">
+                        <i class="fi fi-sr-truck-side"></i>
+                        <span class="aside-mini-hidden-element text-truncate flex-grow-1">
+                            {{ translate('Courier_Service') }}
+                        </span>
+                    </a>
+                </li>
             @endif
 
             @if(Helpers::module_permission_check('themes_and_addons'))

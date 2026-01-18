@@ -34,7 +34,9 @@ trait FileManagerTrait
                 if (in_array(request()->ip(), ['127.0.0.1', '::1']) && !(imagetypes() & IMG_WEBP) || env('APP_DEBUG') && !(imagetypes() & IMG_WEBP)) {
                     $format = 'png';
                 }
-                $imageWebp = Image::make($image)->encode($format);
+                // dd($image);
+                // $imageWebp = Image::make($image)->encode($format);
+                $imageWebp = Image::make($image->getPathname())->encode($format, 90);
                 $imageName = Carbon::now()->toDateString() . "-" . uniqid() . "." . $format;
                 Storage::disk($storage)->put($dir . $imageName, $imageWebp);
                 $imageWebp->destroy();
